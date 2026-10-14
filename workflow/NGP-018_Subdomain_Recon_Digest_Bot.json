@@ -1,0 +1,741 @@
+{
+  "name": "NGP-018 - Subdomain Recon Digest Bot (F3 + S4)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9,
+              "triggerAtMinute": 18
+            }
+          ]
+        }
+      },
+      "id": "3b824408-55be-4860-aee4-f6840715e8ec",
+      "name": "Schedule Trigger 09:18 IST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -1952,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.ctlogs.dev/v1/subdomains/nmap.org",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "b49bc725-eb8d-4f89-be47-5165e0c6c93b",
+      "name": "CT Source - ctlogs.dev",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -1744,
+        464
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "https://crt.sh/?q=%25.nmap.org&output=json",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "id": "9f781312-5106-4efd-8d58-c72fdae1d0b7",
+      "name": "CT Source - crt.sh (optional)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -1744,
+        672
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "id": "cb1fca66-22d8-4a70-891a-d65434c9a87d",
+      "name": "Merge CT Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -1520,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Clean Hostnames: extract nmap.org hosts from ANY response shape (ctlogs.dev rows[], crt.sh array, etc.)\nconst DOMAIN = 'nmap.org';\nconst CHUNK = 30;\nconst SKIP_KEYS = new Set(['url', 'self', 'href', 'links', 'error', 'message', 'status', 'statusCode', 'headers']);\nconst RE = /(?<![a-z0-9_*.-])(?:[a-z0-9_*-]+\\.)*nmap\\.org(?![a-z0-9_-]|\\.[a-z0-9])/gi;\nconst VALID = /^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?(\\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)*$/;\n\nconst found = new Set();\nlet rawTokens = 0, wildcards = 0, failedSources = 0, okItems = 0;\nconst errors = [];\n\nfunction walk(v, depth) {\n  if (depth > 8 || v === null || v === undefined) return;\n  if (typeof v === 'string') {\n    const m = v.match(RE);\n    if (m) for (const t of m) {\n      rawTokens++;\n      const host = t.toLowerCase().replace(/\\.$/, '');\n      if (host.includes('*')) { wildcards++; continue; }       // drop wildcard entries\n      if (!VALID.test(host)) continue;\n      if (host === DOMAIN || host.endsWith('.' + DOMAIN)) found.add(host); // Set = dedupe\n    }\n    return;\n  }\n  if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1); return; }\n  if (typeof v === 'object') {\n    for (const [k, x] of Object.entries(v)) { if (!SKIP_KEYS.has(k)) walk(x, depth + 1); }\n  }\n}\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  if (j.error) {\n    failedSources++;\n    const e = j.error;\n    errors.push(String((e && (e.message || e.description)) || JSON.stringify(e)).slice(0, 120));\n    continue;\n  }\n  okItems++;\n  walk(j, 0);\n}\n\nconst hosts = [...found].sort();\nif (hosts.length === 0) {\n  return [{ json: { hosts: [], noHosts: true,\n    note: 'No subdomains retrieved from CT sources (' + failedSources + ' source error(s)' + (errors.length ? ': ' + errors[0] : '') + ')' } }];\n}\nconst out = [];\nfor (let i = 0; i < hosts.length; i += CHUNK) {\n  out.push({ json: { hosts: hosts.slice(i, i + CHUNK), total: hosts.length, rawTokens, wildcards, failedSources } });\n}\nreturn out;\n"
+      },
+      "id": "b35428cf-5cc8-42a0-a136-f8a97910f952",
+      "name": "Clean Hostnames",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1296,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ae8052f1-0896-41d0-a7c6-b5673b8101f6",
+              "leftValue": "={{ $json.hosts.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c1de21ee-56af-4787-9b24-cce6301bf206",
+      "name": "Has Hosts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1072,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=🔴 NGP-018 | exec #{{ $execution.id }} | {{ $now.setZone('Asia/Kolkata').toFormat('dd-LLL-yyyy HH:mm:ss') }} IST | RED / SOURCE FAILURE | {{ $json.note }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "d5299d19-5905-44f9-867d-4df4b4540628",
+      "name": "Source Failure - Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -960,
+        768
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Classify these {{ $json.hosts.length }} hostnames of nmap.org and return the JSON described in your instructions.\n\nHOSTS:\n{{ JSON.stringify({ hosts: $json.hosts }) }}",
+        "options": {
+          "systemMessage": "You are a passive reconnaissance hostname-classification assistant. Scope: nmap.org only.\n\nYou receive a JSON object {\"hosts\": [...]}. Classify EVERY hostname in the list using ONLY the hostname text itself. Do not browse, scan, resolve DNS, probe services, or claim to know whether a host is online.\n\nFor each hostname choose exactly one tag:\n- admin   : administration, management, control, VPN or internal-access roles (keywords such as admin, administrator, panel, cpanel, manage, console, portal, vpn, sso, login, auth, ldap, vault, root)\n- dev     : development or testing roles (dev, test, testing, sandbox, lab, beta, build, ci, git, svn, jenkins, issues, bugs, tracker)\n- staging : pre-production roles (staging, stage, stg, uat, preprod, pre-prod, qa, demo)\n- api     : API or service endpoints (api, rest, graphql, ws, gateway, service, svc, backend)\n- other   : everything else (www, mail, docs, download, static, cdn, blog, apex domain and ordinary public sites)\n\nAssign an integer priority 1-5 = how interesting the hostname is as a reconnaissance target, judged from the hostname text only:\n5 = hostname clearly signals an administrative or management interface\n4 = strong sensitive-role keyword (admin-like, vpn/sso/login, internal tooling)\n3 = clear dev, test, staging or api role\n2 = weak or ambiguous hint of a non-public or special-purpose role (for example version control, tracking, or lab hosts)\n1 = ordinary public-facing host with no meaningful hint (www, mail, docs, download, cdn, apex domain)\n\nRules:\n- Apply the rubric directly to the keywords in the hostname. A keyword is a valid reason for priority 2-5.\n- A priority is a triage hint, not a finding. Never say a host is malicious, compromised, hacked, vulnerable, exploited, under attack, or currently online.\n- \"reason\" must be ONE short sentence (max 15 words) that cites only the keyword or pattern visible in the hostname.\n- Return one result object for EVERY input hostname, copying the hostname exactly as given.\n\nOutput format: respond with valid JSON only. No markdown, no code fences, no commentary. Exactly this shape:\n{\"results\":[{\"host\":\"<hostname>\",\"tag\":\"admin|dev|staging|api|other\",\"priority\":1,\"reason\":\"<one sentence>\"}]}"
+        }
+      },
+      "id": "3316532e-ab3f-491c-91d7-27b1e3cad3e8",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -864,
+        448
+      ],
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-20b",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "4188bd75-ea00-4a58-a030-bc67c80b288e",
+      "name": "Groq Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -800,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse, Validate, Filter >=2 and Group by tag\nconst ALLOWED = ['admin', 'dev', 'staging', 'api', 'other'];\nconst ORDER = ['admin', 'dev', 'staging', 'api', 'other'];\nconst FORBIDDEN = ['malicious', 'compromised', 'hacked', 'cyberattack', 'under attack', 'breached', 'exploited', 'infected', 'vulnerable'];\nconst MAX_MSG = 3300;\n\nconst expected = [];\nfor (const it of $('Clean Hostnames').all()) for (const h of (it.json.hosts || [])) expected.push(h);\nconst expectedSet = new Set(expected);\n\nfunction extract(raw) {\n  if (raw && typeof raw === 'object') return raw;\n  if (typeof raw !== 'string') return null;\n  let s = raw.replace(/```json|```/gi, '').trim();\n  try { return JSON.parse(s); } catch (e) {}\n  const a = s.indexOf('['), o = s.indexOf('{');\n  const tryRange = (open, close) => {\n    const st = s.indexOf(open), en = s.lastIndexOf(close);\n    if (st === -1 || en <= st) return null;\n    try { return JSON.parse(s.slice(st, en + 1)); } catch (e) { return null; }\n  };\n  if (o !== -1 && (a === -1 || o < a)) return tryRange('{', '}') || tryRange('[', ']');\n  return tryRange('[', ']') || tryRange('{', '}');\n}\n\nfunction toEntries(p) {\n  if (Array.isArray(p)) return p;\n  if (p && typeof p === 'object') {\n    for (const k of ['results', 'hosts', 'items', 'classifications', 'data']) if (Array.isArray(p[k])) return p[k];\n    if (p.host || p.hostname) return [p];\n  }\n  return [];\n}\n\nconst valid = new Map();\nfor (const item of $input.all()) {\n  if (item.json.error) continue;\n  for (const e of toEntries(extract(item.json.output ?? item.json.text))) {\n    if (!e || typeof e !== 'object') continue;\n    const host = String(e.host || e.hostname || '').toLowerCase().trim().replace(/\\.$/, '');\n    if (!expectedSet.has(host) || valid.has(host)) continue;\n    const tag = String(e.tag || e.category || '').toLowerCase().trim();\n    const priority = Math.round(Number(e.priority));\n    if (!ALLOWED.includes(tag) || !Number.isFinite(priority) || priority < 1 || priority > 5) continue;\n    let reason = String(e.reason || '').replace(/\\s+/g, ' ').trim();\n    if (!reason || FORBIDDEN.some(w => reason.toLowerCase().includes(w))) reason = 'Hostname pattern suggests ' + (tag === 'api' || tag === 'admin' ? 'an ' : 'a ') + tag + ' role.';\n    if (reason.length > 140) reason = reason.slice(0, 137) + '...';\n    valid.set(host, { host, tag, priority, reason });\n  }\n}\n\nconst results = [...valid.values()];\nconst failed = expected.filter(h => !valid.has(h));\nlet stats = expected.length + ' hosts scanned | ' + results.length + ' classified | ' + failed.length + ' failed validation';\nif (failed.length) stats += '\\nUnclassified: ' + failed.slice(0, 10).join(', ') + (failed.length > 10 ? ' ...' : '');\n\nconst sevOf = p => p >= 4 ? 'red' : p === 3 ? 'orange' : p === 2 ? 'green' : 'none';\nconst range = { red: 'priority 4-5', orange: 'priority 3', green: 'priority 2' };\nconst out = [];\n\nfor (const sev of ['red', 'orange', 'green']) {\n  const list = results.filter(r => sevOf(r.priority) === sev);   // priority >= 2 filter happens here (none = P1 dropped)\n  if (!list.length) continue;\n  const parts = [];\n  let cur = '';\n  for (const tag of ORDER) {\n    const g = list.filter(r => r.tag === tag).sort((a, b) => b.priority - a.priority || a.host.localeCompare(b.host));\n    if (!g.length) continue;\n    let head = tag.toUpperCase() + ' (' + g.length + ')';\n    cur += (cur ? '\\n\\n' : '') + head;\n    for (const r of g) {\n      const line = '\\n• ' + r.host + ' [P' + r.priority + '] — ' + r.reason;\n      if (cur.length + line.length > MAX_MSG) { parts.push(cur); cur = tag.toUpperCase() + ' (cont.)'; }\n      cur += line;\n    }\n  }\n  if (cur) parts.push(cur);\n  parts.forEach((body, i) => out.push({ json: {\n    severity: sev, part: i + 1, parts: parts.length, count: list.length,\n    summary: list.length + ' host(s) ' + range[sev] + ' on nmap.org', body, stats } }));\n}\n\nif (!out.length) {\n  if (results.length === 0) {\n    out.push({ json: { severity: 'error', emoji: '⚠️', verdict: 'AI FAILURE / check', part: 1, parts: 1, count: 0,\n      summary: 'AI classification failed for all ' + expected.length + ' hosts - check Groq credential or rate limit', body: '', stats } });\n  } else {\n    out.push({ json: { severity: 'none', emoji: '⚪', verdict: 'CLEAR / none', part: 1, parts: 1, count: 0,\n      summary: 'No hosts with priority >= 2 on nmap.org', body: '', stats } });\n  }\n}\nreturn out;\n"
+      },
+      "id": "e743b515-1a6b-401d-a39f-f47615842c75",
+      "name": "Parse, Validate, Filter >=2 and Group",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -592,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "red"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Red"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "orange"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Orange"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "green"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Green"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Clear / Info"
+        }
+      },
+      "id": "fcd973e7-41fd-494b-aac9-8efb9cb728d6",
+      "name": "Route by Severity",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -352,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=🔴 NGP-018 | exec #{{ $execution.id }} | {{ $now.setZone('Asia/Kolkata').toFormat('dd-LLL-yyyy HH:mm:ss') }} IST | RED / HIGH | {{ $json.summary }}{{ $json.parts > 1 ? ' (part ' + $json.part + '/' + $json.parts + ')' : '' }}\n\n🚨 Review first:\n{{ $json.body }}\n\n📊 {{ $json.stats }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "a9ae05b0-8eb2-4775-bfb6-805d66a9dbbf",
+      "name": "Red Route - Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -96,
+        144
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=🟠 NGP-018 | exec #{{ $execution.id }} | {{ $now.setZone('Asia/Kolkata').toFormat('dd-LLL-yyyy HH:mm:ss') }} IST | ORANGE / MEDIUM | {{ $json.summary }}{{ $json.parts > 1 ? ' (part ' + $json.part + '/' + $json.parts + ')' : '' }}\n\n{{ $json.body }}\n\n📊 {{ $json.stats }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "d4f5b01c-fc10-48ac-a1fa-93ba2acba957",
+      "name": "Orange Route - Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -96,
+        352
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=🟢 NGP-018 | exec #{{ $execution.id }} | {{ $now.setZone('Asia/Kolkata').toFormat('dd-LLL-yyyy HH:mm:ss') }} IST | GREEN / LOW | {{ $json.summary }}{{ $json.parts > 1 ? ' (part ' + $json.part + '/' + $json.parts + ')' : '' }}\n\nFYI (low signal):\n{{ $json.body }}\n\n📊 {{ $json.stats }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "baa124e3-772f-4694-bd4a-26aeeb722e81",
+      "name": "Green Route - Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -96,
+        544
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.emoji }} NGP-018 | exec #{{ $execution.id }} | {{ $now.setZone('Asia/Kolkata').toFormat('dd-LLL-yyyy HH:mm:ss') }} IST | {{ $json.verdict }} | {{ $json.summary }}\n\n📊 {{ $json.stats }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "741cc0b7-970e-4c4d-9229-0e8454eb69a2",
+      "name": "Clear / Info Route - Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -96,
+        752
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "0873ef7f-2df5-47c0-995b-81e96814d77d",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.5,
+      "position": [
+        -1536,
+        224
+      ],
+      "webhookId": "171a2ef6-673d-4f39-b6b6-ce7f2f2e55e2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "736fb2e4-4a4d-4e2a-ab4a-118df440d121",
+              "leftValue": "={{ String($json.message?.chat?.id ?? '') }}",
+              "rightValue": "YOUR_TELEGRAM_CHAT_ID",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "91dddd43-6dbb-4cd6-a0ff-4788ad3c0be0",
+              "leftValue": "={{ String($json.message?.from?.id ?? '') }}",
+              "rightValue": "YOUR_TELEGRAM_CHAT_ID",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c39091d0-9a57-4a90-922b-787831e53d69",
+              "leftValue": "={{ $json.message?.chat?.type ?? '' }}",
+              "rightValue": "private",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "44890860-c57b-49d0-84b3-46c957bfe662",
+      "name": "Check Chat ID (Allowlist)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1328,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=🟢 NGP-018 | exec #{{ $execution.id }} | {{ $now.setZone('Asia/Kolkata').toFormat('dd-LLL-yyyy HH:mm:ss') }} IST | AUTHORIZED / info | Bot online. Daily nmap.org digest runs at 09:18 IST.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "c7dbf6a4-7482-4b01-bd91-ef7330f540a4",
+      "name": "Authorized Reply - Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -1088,
+        128
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_DATA_TABLE_ID",
+          "cachedResultName": "NGP-018 Unauthorized Access Log"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "attempted_at": "={{ $now.toISO() }}",
+            "chat_id": "={{ String($json.message?.chat?.id ?? \"\") }}",
+            "user_id": "={{ String($json.message?.from?.id ?? \"\") }}",
+            "username": "={{ $json.message?.from?.username ?? $json.message?.from?.first_name ?? \"unknown\" }}",
+            "command": "={{ $json.message?.text ?? $json.message?.caption ?? \"[non-text message]\" }}",
+            "outcome": "rejected"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "attempted_at",
+              "displayName": "attempted_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "username",
+              "displayName": "username",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "command",
+              "displayName": "command",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "outcome",
+              "displayName": "outcome",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "50725bad-530c-40cc-975e-ea769444ee0d",
+      "name": "Log Unauthorized Attempt",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -1088,
+        352
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger 09:18 IST": {
+      "main": [
+        [
+          {
+            "node": "CT Source - ctlogs.dev",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "CT Source - crt.sh (optional)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CT Source - ctlogs.dev": {
+      "main": [
+        [
+          {
+            "node": "Merge CT Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CT Source - crt.sh (optional)": {
+      "main": [
+        [
+          {
+            "node": "Merge CT Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge CT Sources": {
+      "main": [
+        [
+          {
+            "node": "Clean Hostnames",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean Hostnames": {
+      "main": [
+        [
+          {
+            "node": "Has Hosts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Hosts?": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Source Failure - Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse, Validate, Filter >=2 and Group",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse, Validate, Filter >=2 and Group": {
+      "main": [
+        [
+          {
+            "node": "Route by Severity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Severity": {
+      "main": [
+        [
+          {
+            "node": "Red Route - Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Orange Route - Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Green Route - Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clear / Info Route - Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Chat ID (Allowlist)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Chat ID (Allowlist)": {
+      "main": [
+        [
+          {
+            "node": "Authorized Reply - Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Unauthorized Attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Red Route - Telegram": {
+      "main": [
+        []
+      ]
+    },
+    "Orange Route - Telegram": {
+      "main": [
+        []
+      ]
+    },
+    "Green Route - Telegram": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timezone": "Asia/Kolkata"
+  },
+  "meta": {},
+  "nodeGroups": [],
+  "tags": []
+}
